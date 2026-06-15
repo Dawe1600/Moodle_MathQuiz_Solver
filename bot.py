@@ -3,20 +3,20 @@ import sys
 import base64
 import json
 import time
-import requests
+import msvcrt
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
+from google import genai
+from google.genai import types
 
 load_dotenv()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
-VISION_MODELS = [
-    "llama-3.2-11b-vision-preview"
-]
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 MATH_MODELS = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant"
+    "gemma-4-31b-it",
+    "gemma-4-26b-a4b-it",
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite"    
 ]
 
 def get_image_base64(page, img_element):
@@ -29,55 +29,34 @@ def get_image_base64(page, img_element):
         print(f"Błąd podczas pobierania obrazka: {e}")
         return None
 
-def call_openrouter_vision(base64_image):
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    for model in VISION_MODELS:
-        payload = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Opisz dokładnie ten obrazek matematyczny na potrzeby rozwiązania zadania. Zwróć szczególną uwagę na wzory, liczby, wykresy."
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{base64_image}"
-                            }
-                        }
-                    ]
-                }
+def call_gemini_vision(base64_image):
+    if not GEMINI_API_KEY or "twoj_klucz" in GEMINI_API_KEY:
+        print("Brak klucza GEMINI_API_KEY. Nie można opisać obrazka.")
+        return ""
+        
+    try:
+        print("Próbuję model Vision: gemini-3.1-flash-lite (Google AI Studio)...")
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        response = client.models.generate_content(
+            model='gemini-3.1-flash-lite',
+            contents=[
+                types.Part.from_bytes(
+                    data=base64.b64decode(base64_image),
+                    mime_type='image/png',
+                ),
+                "Opisz dokładnie ten obrazek matematyczny na potrzeby rozwiązania zadania. Zwróć szczególną uwagę na wzory, liczby, wykresy."
             ]
-        }
-        try:
-            print(f"Próbuję model Vision: {model}...")
-            response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
-            if response.status_code == 200:
-                data = response.json()
-                if 'error' in data:
-                    print(f"Błąd modelu {model}: {data['error']}")
-                    continue
-                return data['choices'][0]['message']['content']
-            else:
-                print(f"Błąd HTTP dla {model}: {response.text}")
-        except Exception as e:
-            print(f"Wyjątek dla {model}: {e}")
-            
-    return ""
+        )
+        return response.text
+    except Exception as e:
+        print(f"Wyjątek modelu Gemini: {e}")
+        return ""
 
-def call_openrouter_math(prompt):
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
+def call_gemini_math(prompt):
+    if not GEMINI_API_KEY or "twoj_klucz" in GEMINI_API_KEY:
+        print("Brak klucza GEMINI_API_KEY. Nie można rozwiązać matematyki.")
+        return None
+        
     schema = {
         "type": "object",
         "properties": {
@@ -86,10 +65,15 @@ def call_openrouter_math(prompt):
                 "enum": ["radio", "checkbox", "text", "select"],
                 "description": "Typ odpowiedzi."
             },
+            "selected_indices": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Lista numerów indeksów (ID) poprawnych opcji z listy Dostępnych opcji (np. [0], [1, 2]). Używaj tylko dla radio/checkbox."
+            },
             "selected_options": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Lista tekstów wyznaczających poprawne opcje (dla radio tylko 1 element, dla checkbox wiele)."
+                "description": "Lista tekstów wyznaczających poprawne opcje dla pytań typu select."
             },
             "text_answer": {
                 "type": "string",
@@ -99,38 +83,25 @@ def call_openrouter_math(prompt):
         "required": ["answer_type"]
     }
     
+    full_prompt = "Jesteś ekspertem z matematyki. Udziel precyzyjnej odpowiedzi. MUSISZ zwrócić dane wyłącznie w formacie JSON zawierającym klucze z tego schematu:\n" + json.dumps(schema) + "\n\n" + prompt
+
     for model in MATH_MODELS:
-        payload = {
-            "model": model,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "Jesteś ekspertem z matematyki. Udziel precyzyjnej odpowiedzi. MUSISZ zwrócić dane wyłącznie w formacie JSON zawierającym klucze z tego schematu:\n" + json.dumps(schema)
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ]
-        }
         try:
-            print(f"Próbuję model Math: {model}...")
-            response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
-            if response.status_code == 200:
-                data = response.json()
-                if 'error' in data:
-                    print(f"Błąd modelu {model}: {data['error']}")
-                    continue
-                    
-                content = data['choices'][0]['message']['content']
-                try:
-                    return json.loads(content)
-                except Exception as e:
-                    print(f"Zwrócono błędny JSON z {model}:", content)
-                    continue
-            else:
-                print(f"Błąd HTTP dla {model}: {response.text}")
+            print(f"Próbuję model Math: {model} (Google AI Studio)...")
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            response = client.models.generate_content(
+                model=model,
+                contents=full_prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                )
+            )
+            content = response.text
+            try:
+                return json.loads(content)
+            except Exception as e:
+                print(f"Zwrócono błędny JSON z {model}:", content)
+                continue
         except Exception as e:
             print(f"Wyjątek dla {model}: {e}")
             
@@ -138,8 +109,8 @@ def call_openrouter_math(prompt):
     return None
 
 def run_bot():
-    if not GROQ_API_KEY or "twoj_klucz" in GROQ_API_KEY:
-        print("UZUPEŁNIJ KLUCZ API W PLIKU .env!")
+    if not GEMINI_API_KEY or "twoj_klucz" in GEMINI_API_KEY:
+        print("UZUPEŁNIJ KLUCZ GEMINI_API_KEY W PLIKU .env!")
         return
 
     with sync_playwright() as p:
@@ -150,12 +121,29 @@ def run_bot():
         page.goto("https://moodle2.e-wsb.pl/login/index.php")
         print("Zaloguj się i wejdź do quizu.")
         
+        auto_mode = False
+        
+        def check_escape():
+            escaped = False
+            while msvcrt.kbhit():
+                key = msvcrt.getch()
+                if key == b'\x1b':
+                    escaped = True
+            return escaped
+            
         while True:
-            cmd = input("\nWciśnij [Enter] aby rozwiązać stronę, lub 'q' aby wyjść: ")
-            if cmd.lower() == 'q':
-                break
+            if not auto_mode:
+                cmd = input("\nWciśnij [Enter] aby włączyć tryb AUTO (rozwiązywanie bez przerwy), lub 'q' aby wyjść: ")
+                if cmd.lower() == 'q':
+                    break
+                auto_mode = True
                 
-            print("Analizuję stronę...")
+            if check_escape():
+                print("\n[!] Wykryto klawisz ESC! Zatrzymano tryb AUTO. Czekam...")
+                auto_mode = False
+                continue
+                
+            print("Analizuję stronę... (wciśnij klawisz ESC w oknie terminala, aby przerwać tryb auto na końcu tej strony)")
             questions = page.locator(".que")
             count = questions.count()
             if count == 0:
@@ -177,18 +165,34 @@ def run_bot():
                     b64 = get_image_base64(page, img)
                     if b64:
                         print(f"Obrazek {j+1} - Generowanie opisu Vision...")
-                        desc = call_openrouter_vision(b64)
+                        desc = call_gemini_vision(b64)
                         img_desc_list.append(f"Z obrazka odczytano: {desc}")
                 
                 # Opcje
                 prompt_options = ""
-                labels = q_container.locator(".answer label")
+                labels_elements = []
+                labels = q_container.locator(".answer [data-region='answer-label'], .answer label")
                 if labels.count() > 0:
                     for j in range(labels.count()):
                         lbl = labels.nth(j)
-                        prompt_options += f"- {lbl.inner_text().strip()}\n"
+                        labels_elements.append(lbl)
+                        
+                        lbl_text = lbl.inner_text().strip()
+                        
+                        lbl_imgs = lbl.locator("img")
+                        img_texts = []
+                        if lbl_imgs.count() > 0:
+                            for k in range(lbl_imgs.count()):
+                                b64 = get_image_base64(page, lbl_imgs.nth(k))
+                                if b64:
+                                    print(f"Opcja {j} zawiera obrazek - Generowanie opisu Vision...")
+                                    desc = call_gemini_vision(b64)
+                                    img_texts.append(f"[Obrazek: {desc}]")
+                                    
+                        combined_text = lbl_text + " " + " ".join(img_texts)
+                        prompt_options += f"Opcja {j}: {combined_text.strip()}\n"
                 
-                inputs = q_container.locator("input[type='text']")
+                inputs = q_container.locator("input:not([type='hidden']):not([type='radio']):not([type='checkbox']):not([type='submit']):not([type='button'])")
                 has_text = inputs.count() > 0
                 
                 selects = q_container.locator("select")
@@ -201,27 +205,26 @@ def run_bot():
                 if img_desc_list:
                     prompt += "\n".join(img_desc_list) + "\n"
                 if prompt_options:
-                    prompt += f"\nDostępne opcje:\n{prompt_options}\nZwróć typ 'radio', 'checkbox' lub 'select' w 'answer_type' oraz wybór w 'selected_options'."
+                    prompt += f"\nDostępne opcje:\n{prompt_options}\nZwróć typ 'radio', 'checkbox' w 'answer_type' oraz wybór w 'selected_indices' (jako tablica liczb np. [0] lub [1, 3]). Dla typu 'select' zwróć listę stringów w 'selected_options'."
                 elif has_text:
                     prompt += "\nPytanie otwarte. Zwróć 'answer_type': 'text' i podaj treść do wpisania w 'text_answer'."
                 
                 print(f"Pytanie {i+1} do modelu...")
-                ans = call_openrouter_math(prompt)
+                ans = call_gemini_math(prompt)
                 print(f"Otrzymano odpowiedź: {ans}")
                 
                 if ans:
                     a_type = ans.get("answer_type")
-                    if a_type in ["radio", "checkbox"] and ans.get("selected_options"):
-                        for opt in ans["selected_options"]:
+                    if a_type in ["radio", "checkbox"] and ans.get("selected_indices") is not None:
+                        for idx in ans["selected_indices"]:
                             try:
-                                loc = q_container.locator("label", has_text=opt).first
-                                if loc.count() > 0:
-                                    loc.click()
-                                    print(f"Zaznaczono opcję zawierającą: {opt}")
+                                if 0 <= idx < len(labels_elements):
+                                    labels_elements[idx].click()
+                                    print(f"Zaznaczono opcję {idx}")
                                 else:
-                                    print(f"Nie znaleziono opcji: {opt}")
+                                    print(f"Błąd: Model zwrócił nieprawidłowy indeks opcji: {idx}")
                             except Exception as e:
-                                print("Błąd kliknięcia:", e)
+                                print(f"Błąd kliknięcia opcji {idx}: {e}")
                                 
                     elif a_type == "select" and ans.get("selected_options"):
                         if selects.count() > 0:
@@ -231,9 +234,16 @@ def run_bot():
                             
                     elif a_type == "text" and ans.get("text_answer"):
                         if inputs.count() > 0:
-                            inputs.first.fill(ans["text_answer"])
+                            inputs.first.fill(str(ans["text_answer"]))
                             print(f"Wpisano tekst: {ans['text_answer']}")
+                        else:
+                            print(f"UWAGA: Model wygenerował odpowiedź tekstową ({ans['text_answer']}), ale na stronie nie znaleziono żadnego pola do wpisania tekstu!")
             
+            if check_escape():
+                print("\n[!] Wykryto klawisz ESC! Przerywam rozwiązywanie przed przejściem do kolejnej strony.")
+                auto_mode = False
+                continue
+
             # Nawigacja
             next_btn = page.locator("input#mod_quiz-next-nav[value*='Następna']")
             end_btn = page.locator("input#mod_quiz-next-nav[value*='Zapisz podejście']")
@@ -241,10 +251,13 @@ def run_bot():
             if next_btn.count() > 0:
                 print("Przechodzę do następnej strony...")
                 next_btn.click()
+                time.sleep(1) # Zabezpieczenie przed zbyt szybkim wczytywaniem
             elif end_btn.count() > 0:
-                print("Quiz zakończony (pojawiło się 'Zapisz podejście'). Czekam w trybie oczekiwania na nowe polecenia.")
+                print("Quiz zakończony (pojawiło się 'Zapisz podejście'). Przechodzę w tryb oczekiwania.")
+                auto_mode = False
             else:
-                print("Brak przycisku nawigacji.")
+                print("Brak przycisku nawigacji. Zatrzymuję tryb AUTO.")
+                auto_mode = False
 
 if __name__ == "__main__":
     run_bot()
