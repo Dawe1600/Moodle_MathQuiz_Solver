@@ -2,7 +2,7 @@ import os
 import base64
 import json
 import time
-import msvcrt
+import keyboard
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 from google import genai
@@ -29,17 +29,17 @@ VISION_MODELS = [
 
 def check_escape(raise_exc=False):
     escaped = False
-    while msvcrt.kbhit():
-        key = msvcrt.getch()
-        if key == b'\x1b':
+    try:
+        if keyboard.is_pressed('esc'):
             escaped = True
+    except Exception:
+        pass
     if escaped and raise_exc:
         raise InterruptedError("Przerwano przez klawisz ESC")
     return escaped
 
 def get_image_base64(page, img_element):
     try:
-        # Robimy screenshot elementu, co omija problemy z canvasem i autoryzacją
         img_element.scroll_into_view_if_needed()
         img_bytes = img_element.screenshot()
         return base64.b64encode(img_bytes).decode('utf-8')
@@ -130,6 +130,144 @@ def call_gemini_math(prompt):
     print("Wszystkie modele Math zawiodły.")
     return None
 
+def parse_question(page, q_container):
+
+    q_text_el = q_container.locator(".qtext")
+    q_text = q_text_el.inner_text() if q_text_el.count() > 0 else ""
+    
+    images = q_text_el.locator("img")
+    img_desc_list = []
+    for j in range(images.count()):
+        img = images.nth(j)
+        b64 = get_image_base64(page, img)
+        if b64:
+            print(f"Obrazek {j+1} - Generowanie opisu Vision...")
+            desc = call_gemini_vision(b64)
+            img_desc_list.append(f"Z obrazka odczytano: {desc}")
+            
+    prompt_options = ""
+    labels_elements = []
+    
+    labels = q_container.locator(".answer [data-region='answer-label'], .answer label")
+    if labels.count() > 0:
+        for j in range(labels.count()):
+            lbl = labels.nth(j)
+            labels_elements.append(lbl)
+            
+            lbl_text = lbl.inner_text().strip()
+            lbl_imgs = lbl.locator("img")
+            img_texts = []
+            if lbl_imgs.count() > 0:
+                for k in range(lbl_imgs.count()):
+                    b64 = get_image_base64(page, lbl_imgs.nth(k))
+                    if b64:
+                        print(f"Opcja {j} zawiera obrazek - Generowanie opisu Vision...")
+                        desc = call_gemini_vision(b64)
+                        img_texts.append(f"[Obrazek: {desc}]")
+                        
+            combined_text = lbl_text + " " + " ".join(img_texts)
+            prompt_options += f"Opcja {j}: {combined_text.strip()}\n"
+            
+    inputs = q_container.locator("input:not([type='hidden']):not([type='radio']):not([type='checkbox']):not([type='submit']):not([type='button'])")
+    has_text = inputs.count() > 0
+    
+    checkboxes = q_container.locator("input[type='checkbox']")
+    is_multiple = checkboxes.count() > 0
+    
+    selects = q_container.locator("select")
+    if selects.count() > 0:
+        prompt_options += "\nTo jest pytanie typu DOPASOWANIE (wiele list rozwijanych). Dla każdego elementu podaj poprawny wybór w 'selected_options' w odpowiedniej kolejności (np. [\"Opcja 1\", \"Opcja 2\"]):\n"
+        for j in range(selects.count()):
+            sel = selects.nth(j)
+            row = sel.locator("xpath=./ancestor::tr").first
+            context_text = f"Lista {j+1}"
+            
+            if row.count() > 0:
+                text_td = row.locator("td.text")
+                if text_td.count() == 0:
+                    text_td = row
+                td_str = text_td.inner_text().strip()
+                
+                imgs = text_td.locator("img")
+                img_descs = []
+                for k in range(imgs.count()):
+                    b64 = get_image_base64(page, imgs.nth(k))
+                    if b64:
+                        print(f"Lista {j+1} - Generowanie opisu Vision dla powiązanego obrazka...")
+                        desc = call_gemini_vision(b64)
+                        img_descs.append(f"[Obrazek: {desc}]")
+                        
+                context_text = td_str + " " + " ".join(img_descs)
+            
+            opts = sel.locator("option").all_inner_texts()
+            opts = [o.strip() for o in opts if o.strip() and "Wybierz" not in o]
+            prompt_options += f"Dla elementu '{context_text.strip()}' -> Wybierz jedną z opcji: {', '.join(opts)}\n"
+            
+    prompt = f"Treść:\n{q_text}\n"
+    if img_desc_list:
+        prompt += "\n".join(img_desc_list) + "\n"
+    if prompt_options:
+        prompt += f"\nDostępne opcje:\n{prompt_options}\nZwróć typ 'radio', 'checkbox' w 'answer_type' oraz wybór w 'selected_indices' (jako tablica liczb np. [0] lub [1, 3]). Dla typu 'select' zwróć listę stringów w 'selected_options'."
+        if is_multiple:
+            prompt += "\nUWAGA: To jest pytanie WIELOKROTNEGO WYBORU (checkbox). Przeanalizuj uważnie wszystkie warianty i zwróć w tablicy 'selected_indices' wszystkie poprawne opcje (np. [0, 2]). Pamiętaj jednak, że poprawna może okazać się też tylko JEDNA odpowiedź (np. [1]) - zaznacz tylko to, co jest bezwzględnie prawdziwe."
+    elif has_text:
+        prompt += "\nPytanie otwarte. Zwróć 'answer_type': 'text' i podaj treść do wpisania w 'text_answer'."
+        
+    return prompt, labels_elements, selects, inputs
+
+
+def apply_answer(ans, labels_elements, selects, inputs):
+
+    if not ans:
+        return
+        
+    a_type = ans.get("answer_type")
+    if a_type in ["radio", "checkbox"] and ans.get("selected_indices") is not None:
+        for idx in ans["selected_indices"]:
+            try:
+                if 0 <= idx < len(labels_elements):
+                    labels_elements[idx].click()
+                    print(f"Zaznaczono opcję {idx}")
+                else:
+                    print(f"Błąd: Model zwrócił nieprawidłowy indeks opcji: {idx}")
+            except Exception as e:
+                print(f"Błąd kliknięcia opcji {idx}: {e}")
+                
+    elif a_type == "select" and ans.get("selected_options"):
+        for j in range(min(selects.count(), len(ans["selected_options"]))):
+            opt = ans["selected_options"][j]
+            try:
+                selects.nth(j).select_option(label=opt)
+                print(f"Wybrano z listy {j+1}: {opt}")
+            except Exception as e:
+                print(f"Nie udało się wybrać opcji '{opt}' z listy {j+1}: {e}")
+            
+    elif a_type == "text" and ans.get("text_answer"):
+        if inputs.count() > 0:
+            inputs.first.fill(str(ans["text_answer"]))
+            print(f"Wpisano tekst: {ans['text_answer']}")
+        else:
+            print(f"UWAGA: Model wygenerował odpowiedź tekstową ({ans['text_answer']}), ale na stronie nie znaleziono żadnego pola do wpisania tekstu!")
+
+
+def handle_navigation(page):
+
+    next_btn = page.locator("input#mod_quiz-next-nav[value*='Następna']")
+    end_btn = page.locator("input#mod_quiz-next-nav[value*='Zapisz podejście']")
+    
+    if next_btn.count() > 0:
+        print("Przechodzę do następnej strony...")
+        next_btn.click()
+        time.sleep(1)
+        return True
+    elif end_btn.count() > 0:
+        print("Quiz zakończony (pojawiło się 'Zapisz podejście'). Przechodzę w tryb oczekiwania.")
+        return False
+    else:
+        print("Brak przycisku nawigacji. Zatrzymuję tryb AUTO.")
+        return False
+
+
 def run_bot():
     if not GEMINI_API_KEY or "twoj_klucz" in GEMINI_API_KEY:
         print("UZUPEŁNIJ KLUCZ GEMINI_API_KEY W PLIKU .env!")
@@ -159,151 +297,32 @@ def run_bot():
                 count = questions.count()
                 if count == 0:
                     print("Nie znaleziono pytania (.que). Czy jesteś w quizie?")
+                    time.sleep(2)
                     continue
                     
                 for i in range(count):
                     q_container = questions.nth(i)
                     
-                    # Tekst pytania
-                    q_text_el = q_container.locator(".qtext")
-                    q_text = q_text_el.inner_text() if q_text_el.count() > 0 else ""
-                    
-                    # Obrazki
-                    images = q_text_el.locator("img")
-                    img_desc_list = []
-                    for j in range(images.count()):
-                        img = images.nth(j)
-                        b64 = get_image_base64(page, img)
-                        if b64:
-                            print(f"Obrazek {j+1} - Generowanie opisu Vision...")
-                            desc = call_gemini_vision(b64)
-                            img_desc_list.append(f"Z obrazka odczytano: {desc}")
-                    
-                    # Opcje
-                    prompt_options = ""
-                    labels_elements = []
-                    labels = q_container.locator(".answer [data-region='answer-label'], .answer label")
-                    if labels.count() > 0:
-                        for j in range(labels.count()):
-                            lbl = labels.nth(j)
-                            labels_elements.append(lbl)
-                            
-                            lbl_text = lbl.inner_text().strip()
-                            
-                            lbl_imgs = lbl.locator("img")
-                            img_texts = []
-                            if lbl_imgs.count() > 0:
-                                for k in range(lbl_imgs.count()):
-                                    b64 = get_image_base64(page, lbl_imgs.nth(k))
-                                    if b64:
-                                        print(f"Opcja {j} zawiera obrazek - Generowanie opisu Vision...")
-                                        desc = call_gemini_vision(b64)
-                                        img_texts.append(f"[Obrazek: {desc}]")
-                                        
-                            combined_text = lbl_text + " " + " ".join(img_texts)
-                            prompt_options += f"Opcja {j}: {combined_text.strip()}\n"
-                    
-                    inputs = q_container.locator("input:not([type='hidden']):not([type='radio']):not([type='checkbox']):not([type='submit']):not([type='button'])")
-                    has_text = inputs.count() > 0
-                    
-                    checkboxes = q_container.locator("input[type='checkbox']")
-                    is_multiple = checkboxes.count() > 0
-                    
-                    selects = q_container.locator("select")
-                    if selects.count() > 0:
-                        prompt_options += "\nTo jest pytanie typu DOPASOWANIE (wiele list rozwijanych). Dla każdego elementu podaj poprawny wybór w 'selected_options' w odpowiedniej kolejności (np. [\"Opcja 1\", \"Opcja 2\"]):\n"
-                        for j in range(selects.count()):
-                            sel = selects.nth(j)
-                            # Szukamy kontekstu (najbliższego wiersza tr)
-                            row = sel.locator("xpath=./ancestor::tr").first
-                            context_text = f"Lista {j+1}"
-                            
-                            if row.count() > 0:
-                                text_td = row.locator("td.text")
-                                if text_td.count() == 0:
-                                    text_td = row
-                                td_str = text_td.inner_text().strip()
-                                
-                                # Szukamy powiązanych obrazków
-                                imgs = text_td.locator("img")
-                                img_descs = []
-                                for k in range(imgs.count()):
-                                    b64 = get_image_base64(page, imgs.nth(k))
-                                    if b64:
-                                        print(f"Lista {j+1} - Generowanie opisu Vision dla powiązanego obrazka...")
-                                        desc = call_gemini_vision(b64)
-                                        img_descs.append(f"[Obrazek: {desc}]")
-                                        
-                                context_text = td_str + " " + " ".join(img_descs)
-                            
-                            opts = sel.locator("option").all_inner_texts()
-                            opts = [o.strip() for o in opts if o.strip() and "Wybierz" not in o]
-                            prompt_options += f"Dla elementu '{context_text.strip()}' -> Wybierz jedną z opcji: {', '.join(opts)}\n"
-                    
-                    prompt = f"Treść:\n{q_text}\n"
-                    if img_desc_list:
-                        prompt += "\n".join(img_desc_list) + "\n"
-                    if prompt_options:
-                        prompt += f"\nDostępne opcje:\n{prompt_options}\nZwróć typ 'radio', 'checkbox' w 'answer_type' oraz wybór w 'selected_indices' (jako tablica liczb np. [0] lub [1, 3]). Dla typu 'select' zwróć listę stringów w 'selected_options'."
-                        if is_multiple:
-                            prompt += "\nUWAGA: To jest pytanie WIELOKROTNEGO WYBORU (checkbox). Przeanalizuj uważnie wszystkie warianty i zwróć w tablicy 'selected_indices' wszystkie poprawne opcje (np. [0, 2]). Pamiętaj jednak, że poprawna może okazać się też tylko JEDNA odpowiedź (np. [1]) - zaznacz tylko to, co jest bezwzględnie prawdziwe."
-                    elif has_text:
-                        prompt += "\nPytanie otwarte. Zwróć 'answer_type': 'text' i podaj treść do wpisania w 'text_answer'."
+                    prompt, labels_elements, selects, inputs = parse_question(page, q_container)
                     
                     print(f"Pytanie {i+1} do modelu...")
                     ans = call_gemini_math(prompt)
                     print(f"Otrzymano odpowiedź: {ans}")
                     
-                    if ans:
-                        a_type = ans.get("answer_type")
-                        if a_type in ["radio", "checkbox"] and ans.get("selected_indices") is not None:
-                            for idx in ans["selected_indices"]:
-                                try:
-                                    if 0 <= idx < len(labels_elements):
-                                        labels_elements[idx].click()
-                                        print(f"Zaznaczono opcję {idx}")
-                                    else:
-                                        print(f"Błąd: Model zwrócił nieprawidłowy indeks opcji: {idx}")
-                                except Exception as e:
-                                    print(f"Błąd kliknięcia opcji {idx}: {e}")
-                                    
-                        elif a_type == "select" and ans.get("selected_options"):
-                            for j in range(min(selects.count(), len(ans["selected_options"]))):
-                                opt = ans["selected_options"][j]
-                                try:
-                                    selects.nth(j).select_option(label=opt)
-                                    print(f"Wybrano z listy {j+1}: {opt}")
-                                except Exception as e:
-                                    print(f"Nie udało się wybrać opcji '{opt}' z listy {j+1}: {e}")
-                                
-                        elif a_type == "text" and ans.get("text_answer"):
-                            if inputs.count() > 0:
-                                inputs.first.fill(str(ans["text_answer"]))
-                                print(f"Wpisano tekst: {ans['text_answer']}")
-                            else:
-                                print(f"UWAGA: Model wygenerował odpowiedź tekstową ({ans['text_answer']}), ale na stronie nie znaleziono żadnego pola do wpisania tekstu!")
-                
-                
-                    check_escape(True)
-                    # Nawigacja
-                    next_btn = page.locator("input#mod_quiz-next-nav[value*='Następna']")
-                    end_btn = page.locator("input#mod_quiz-next-nav[value*='Zapisz podejście']")
+                    apply_answer(ans, labels_elements, selects, inputs)
                     
-                    if next_btn.count() > 0:
-                        print("Przechodzę do następnej strony...")
-                        next_btn.click()
-                        time.sleep(1) # Zabezpieczenie przed zbyt szybkim wczytywaniem
-                    elif end_btn.count() > 0:
-                        print("Quiz zakończony (pojawiło się 'Zapisz podejście'). Przechodzę w tryb oczekiwania.")
-                        auto_mode = False
-                    else:
-                        print("Brak przycisku nawigacji. Zatrzymuję tryb AUTO.")
-                        auto_mode = False
-                        
+                check_escape(True)
+                
+                if not handle_navigation(page):
+                    auto_mode = False
+                    
             except InterruptedError as e:
-                print(f"\n[!] {e}. Zatrzymano tryb AUTO. Wracam do oczekiwania na klawisz Enter.")
+                print(f"\n[!] {e}. Zatrzymano tryb AUTO.")
                 auto_mode = False
-                continue
+            except Exception as e:
+                print(f"\nWystąpił nieoczekiwany błąd w głównej pętli: {e}")
+                auto_mode = False
+                time.sleep(2)
 
 if __name__ == "__main__":
     run_bot()
