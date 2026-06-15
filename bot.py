@@ -204,6 +204,9 @@ def run_bot():
                     inputs = q_container.locator("input:not([type='hidden']):not([type='radio']):not([type='checkbox']):not([type='submit']):not([type='button'])")
                     has_text = inputs.count() > 0
                     
+                    checkboxes = q_container.locator("input[type='checkbox']")
+                    is_multiple = checkboxes.count() > 0
+                    
                     selects = q_container.locator("select")
                     if selects.count() > 0:
                         for j in range(selects.count()):
@@ -215,6 +218,8 @@ def run_bot():
                         prompt += "\n".join(img_desc_list) + "\n"
                     if prompt_options:
                         prompt += f"\nDostępne opcje:\n{prompt_options}\nZwróć typ 'radio', 'checkbox' w 'answer_type' oraz wybór w 'selected_indices' (jako tablica liczb np. [0] lub [1, 3]). Dla typu 'select' zwróć listę stringów w 'selected_options'."
+                        if is_multiple:
+                            prompt += "\nUWAGA: To jest pytanie WIELOKROTNEGO WYBORU (checkbox). Przeanalizuj uważnie wszystkie warianty i zwróć w tablicy 'selected_indices' wszystkie poprawne opcje (np. [0, 2]). Pamiętaj jednak, że poprawna może okazać się też tylko JEDNA odpowiedź (np. [1]) - zaznacz tylko to, co jest bezwzględnie prawdziwe."
                     elif has_text:
                         prompt += "\nPytanie otwarte. Zwróć 'answer_type': 'text' i podaj treść do wpisania w 'text_answer'."
                     
