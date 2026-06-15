@@ -4,6 +4,7 @@ Ten projekt to Twój prywatny asystent AI, który pomaga w automatycznym rozwią
 
 ## Cechy projektu
 - **Pełna automatyzacja:** Bot sam czyta treść, zaznacza odpowiedzi (pojedynczego oraz wielokrotnego wyboru) i wpisuje tekst w puste pola.
+- **W 100% za darmo:** Cały system opiera się na dostępie do darmowych modeli (free tier) w Google AI Studio, dzięki czemu korzystanie z bota nie kosztuje Cię ani grosza.
 - **Analiza obrazków:** Masz na teście skomplikowany wykres albo wzór w formie zdjęcia? Skrypt prześle je do modeli Vision, które przeanalizują układ graficzny i "odczytają" zadanie.
 - **Zaawansowana Matematyka:** Po zebraniu danych z ekranu, trafiają one do inteligentnych modeli matematycznych, które zajmują się rozwiązywaniem obliczeń.
 - **Zawsze pod Twoją kontrolą:** W każdej ułamku sekundy podczas pracy skryptu możesz po prostu nacisnąć klawisz **ESC** w swoim terminalu. Bot momentalnie wstrzyma tryb automatyczny, dzięki czemu unikniesz jakichkolwiek problemów.
