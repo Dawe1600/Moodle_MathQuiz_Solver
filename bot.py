@@ -208,9 +208,34 @@ def run_bot():
                     
                     selects = q_container.locator("select")
                     if selects.count() > 0:
+                        prompt_options += "\nTo jest pytanie typu DOPASOWANIE (wiele list rozwijanych). Dla każdego elementu podaj poprawny wybór w 'selected_options' w odpowiedniej kolejności (np. [\"Opcja 1\", \"Opcja 2\"]):\n"
                         for j in range(selects.count()):
-                            opts = selects.nth(j).locator("option").all_inner_texts()
-                            prompt_options += f"Wybór z listy: {', '.join(opts)}\n"
+                            sel = selects.nth(j)
+                            # Szukamy kontekstu (najbliższego wiersza tr)
+                            row = sel.locator("xpath=./ancestor::tr").first
+                            context_text = f"Lista {j+1}"
+                            
+                            if row.count() > 0:
+                                text_td = row.locator("td.text")
+                                if text_td.count() == 0:
+                                    text_td = row
+                                td_str = text_td.inner_text().strip()
+                                
+                                # Szukamy powiązanych obrazków
+                                imgs = text_td.locator("img")
+                                img_descs = []
+                                for k in range(imgs.count()):
+                                    b64 = get_image_base64(page, imgs.nth(k))
+                                    if b64:
+                                        print(f"Lista {j+1} - Generowanie opisu Vision dla powiązanego obrazka...")
+                                        desc = call_gemini_vision(b64)
+                                        img_descs.append(f"[Obrazek: {desc}]")
+                                        
+                                context_text = td_str + " " + " ".join(img_descs)
+                            
+                            opts = sel.locator("option").all_inner_texts()
+                            opts = [o.strip() for o in opts if o.strip() and "Wybierz" not in o]
+                            prompt_options += f"Dla elementu '{context_text.strip()}' -> Wybierz jedną z opcji: {', '.join(opts)}\n"
                     
                     prompt = f"Treść:\n{q_text}\n"
                     if img_desc_list:
@@ -240,10 +265,13 @@ def run_bot():
                                     print(f"Błąd kliknięcia opcji {idx}: {e}")
                                     
                         elif a_type == "select" and ans.get("selected_options"):
-                            if selects.count() > 0:
-                                opt = ans["selected_options"][0]
-                                selects.first.select_option(label=opt)
-                                print(f"Wybrano z listy: {opt}")
+                            for j in range(min(selects.count(), len(ans["selected_options"]))):
+                                opt = ans["selected_options"][j]
+                                try:
+                                    selects.nth(j).select_option(label=opt)
+                                    print(f"Wybrano z listy {j+1}: {opt}")
+                                except Exception as e:
+                                    print(f"Nie udało się wybrać opcji '{opt}' z listy {j+1}: {e}")
                                 
                         elif a_type == "text" and ans.get("text_answer"):
                             if inputs.count() > 0:

@@ -9,6 +9,13 @@ Ten projekt to Twój prywatny asystent AI, który pomaga w automatycznym rozwią
 - **Zaawansowana Matematyka:** Po zebraniu danych z ekranu, trafiają one do inteligentnych modeli matematycznych, które zajmują się rozwiązywaniem obliczeń.
 - **Zawsze pod Twoją kontrolą:** W każdej ułamku sekundy podczas pracy skryptu możesz po prostu nacisnąć klawisz **ESC** w swoim terminalu. Bot momentalnie wstrzyma tryb automatyczny, dzięki czemu unikniesz jakichkolwiek problemów.
 
+## Obsługiwane typy pytań
+Bot bez problemu radzi sobie z najpopularniejszymi formatami testów na platformie Moodle:
+- **Jednokrotnego wyboru** (Pola typu Radio)
+- **Wielokrotnego wyboru** (Checkboxy - bot z automatu wie, żeby szukać wielu poprawnych odpowiedzi)
+- **Pytania otwarte** (Wpisywanie obliczonego wyniku do pustego pola tekstowego)
+- **Dopasowanie** (Zaawansowana obsługa wielu list rozwijanych `select` jednocześnie, wraz z analizowaniem zdjęć przypisanych do poszczególnych wierszy!)
+
 ## Pobranie projektu
 
 Aby zacząć, po prostu skopiuj ten projekt na swój dysk za pomocą programu git i wejdź do nowo utworzonego folderu:
